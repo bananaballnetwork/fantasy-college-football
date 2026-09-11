@@ -255,8 +255,25 @@
     font-variant-numeric:tabular-nums;
   }
   .team-name{flex:1;font-size:15px;font-weight:500;}
+  .team-name-col{display:flex;flex-direction:column;flex:1;gap:2px;}
+  .team-name-main{font-size:15px;font-weight:600;}
+  .team-meta{font-size:12px;color:var(--ink-soft);}
   .team-row.checked{background:#E7F0EA;}
   .team-row.disabled{opacity:0.35;cursor:not-allowed;}
+  .refresh-btn{
+    background:none;border:1px solid #3A4A61;color:#C7CDD6;
+    border-radius:var(--radius);padding:6px 10px;font-size:13px;cursor:pointer;
+  }
+  .refresh-btn:hover{color:var(--paper);border-color:var(--gold);}
+
+  /* ---------- Team Info ---------- */
+  #teamInfoDetail{
+    border-top:1px solid var(--line);
+    margin-top:18px;
+    padding-top:18px;
+  }
+  #teamInfoDetail h3{font-size:22px;margin-bottom:4px;}
+  #teamInfoDetail h4{font-size:15px;margin:18px 0 8px;}
   .sticky-bar{
     position:sticky;
     bottom:0;
@@ -354,9 +371,13 @@
   <nav class="tabs" id="tabs">
     <button data-view="leaderboard" class="active">Leaderboard</button>
     <button data-view="picks">Make Picks</button>
+    <button data-view="teamInfo">Team Info</button>
     <button data-view="myPicks">My Picks</button>
     <button data-view="admin">Admin</button>
-    <button id="logoutBtn" style="margin-left:auto;">Log out (<span id="whoAmI"></span>)</button>
+    <span style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+      <button class="refresh-btn" id="refreshBtn" title="Reload the latest data from Firestore">↻ Refresh data</button>
+      <button id="logoutBtn">Log out (<span id="whoAmI"></span>)</button>
+    </span>
   </nav>
 </header>
 
@@ -409,6 +430,17 @@
       <button class="btn" id="submitPicksBtn">Submit picks</button>
     </div>
     <div id="picksSubmitMsg" class="hint" style="display:none;"></div>
+  </section>
+
+  <!-- ---------------- TEAM INFO ---------------- -->
+  <section class="view" id="view-teamInfo">
+    <h2 class="section-title">Team Info</h2>
+    <p class="section-sub">Pick a team to see its past results, average fantasy points per week, and upcoming schedule.</p>
+    <div class="search-row">
+      <input type="text" id="teamInfoSearch" placeholder="Search teams…">
+    </div>
+    <div class="team-list" id="teamInfoList"></div>
+    <div id="teamInfoDetail" style="display:none;"></div>
   </section>
 
   <!-- ---------------- MY PICKS ---------------- -->
@@ -468,12 +500,12 @@ Miami, 41.05"></textarea>
       Firebase Console → Project settings → Your apps → SDK setup and config.
    ========================================================================= */
 const firebaseConfig = {
-  apiKey: "AIzaSyC51oydwg4JxH51PuI4cgXNzymqliHTq74",
-  authDomain: "fantasy-college-football.firebaseapp.com",
-  projectId: "fantasy-college-football",
-  storageBucket: "fantasy-college-football.firebasestorage.app",
-  messagingSenderId: "1040407917107",
-  appId: "1:1040407917107:web:1b99d649e41a2f8adc2946"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 let db = null;
@@ -535,6 +567,11 @@ let currentUser = null;      // { username, displayName }
 let appConfig = { currentWeek: 1, lockTime: null, adminPin: null };
 let selectedTeams = new Set();
 let isAdminUnlocked = false;
+
+// Caches populated from Firestore, refreshed on login and via the Refresh button
+let teamScoresCache = {};   // { "3": { "Ohio State": 72.68, ... }, ... }
+let scheduleCache = [];     // [{ week, team, opponent, opponentRank, home, completed }, ...]
+let teamRanksCache = {};    // { "Ohio State": 1, ... } — live ranks synced from the Sheet
 
 /* =========================================================================
    4. LOGIN / SESSION
@@ -599,11 +636,74 @@ async function enterApp(){
   document.getElementById('appMain').style.display = 'block';
   document.getElementById('whoAmI').textContent = currentUser.displayName;
   await loadConfig();
+  await Promise.all([loadTeamScores(), loadSchedule(), loadTeamRanks()]);
   renderTeamList();
+  renderTeamInfoList();
   await renderLeaderboard();
   await renderMyPicks();
   startCountdown();
 }
+
+/* =========================================================================
+   4b. DATA CACHES — team scores, schedule, and live ranks synced from the Sheet
+   ========================================================================= */
+async function loadTeamScores(force){
+  if (Object.keys(teamScoresCache).length && !force) return teamScoresCache;
+  const snap = await db.collection('teamScores').get();
+  const map = {};
+  snap.forEach(d => map[d.id] = d.data().teams || {});
+  teamScoresCache = map;
+  return map;
+}
+async function loadSchedule(force){
+  if (scheduleCache.length && !force) return scheduleCache;
+  const snap = await db.collection('schedule').get();
+  const arr = [];
+  snap.forEach(d => arr.push(d.data()));
+  scheduleCache = arr;
+  return arr;
+}
+async function loadTeamRanks(force){
+  if (Object.keys(teamRanksCache).length && !force) return teamRanksCache;
+  const doc = await db.collection('config').doc('teamRanks').get();
+  teamRanksCache = doc.exists ? (doc.data().ranks || {}) : {};
+  return teamRanksCache;
+}
+function teamRank(team){
+  if (typeof teamRanksCache[team] === 'number') return teamRanksCache[team];
+  const t = TEAMS.find(x => x.name === team);
+  return t ? t.rank : null;
+}
+function teamAvgPoints(team){
+  let sum = 0, n = 0;
+  Object.values(teamScoresCache).forEach(weekObj => {
+    if (typeof weekObj[team] === 'number'){ sum += weekObj[team]; n++; }
+  });
+  return n ? sum / n : null;
+}
+function teamNextOpponent(team){
+  return scheduleCache
+    .filter(s => s.team === team && !s.completed)
+    .sort((a,b) => a.week - b.week)[0] || null;
+}
+function teamMetaLine(team){
+  const avg = teamAvgPoints(team);
+  const avgText = avg != null ? `${avg.toFixed(1)} pt/wk avg` : 'No games scored yet';
+  const next = teamNextOpponent(team);
+  const nextText = next
+    ? `Next: ${next.home ? 'vs' : '@'} ${next.opponent}${typeof next.opponentRank === 'number' ? ' (#'+next.opponentRank+')' : ''}`
+    : 'No upcoming game scheduled';
+  return `${avgText} · ${nextText}`;
+}
+document.getElementById('refreshBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('refreshBtn');
+  btn.textContent = '↻ Refreshing…';
+  await Promise.all([loadTeamScores(true), loadSchedule(true), loadTeamRanks(true)]);
+  renderTeamList(document.getElementById('teamSearch').value);
+  renderTeamInfoList(document.getElementById('teamInfoSearch').value);
+  await renderLeaderboard();
+  btn.textContent = '↻ Refresh data';
+});
 
 /* =========================================================================
    5. CONFIG (current week / lock time / admin pin)
@@ -682,6 +782,7 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   document.getElementById('view-' + btn.dataset.view).classList.add('active');
   if (btn.dataset.view === 'leaderboard') renderLeaderboard();
   if (btn.dataset.view === 'myPicks') renderMyPicks();
+  if (btn.dataset.view === 'teamInfo') renderTeamInfoList(document.getElementById('teamInfoSearch').value);
 });
 document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('loginBtn').addEventListener('click', handleLogin);
@@ -698,8 +799,11 @@ function renderTeamList(filter){
     row.className = 'team-row' + (selectedTeams.has(t.name) ? ' checked' : '');
     row.innerHTML = `
       <input type="checkbox" ${selectedTeams.has(t.name) ? 'checked' : ''} data-team="${t.name}">
-      <span class="team-rank">#${t.rank}</span>
-      <span class="team-name">${t.name}</span>
+      <span class="team-rank">#${teamRank(t.name) ?? t.rank}</span>
+      <span class="team-name-col">
+        <span class="team-name-main">${t.name}</span>
+        <span class="team-meta">${teamMetaLine(t.name)}</span>
+      </span>
     `;
     wrap.appendChild(row);
   });
@@ -772,16 +876,10 @@ async function renderMyPicks(){
   snap.forEach(d => weeks.push(d.data()));
   weeks.sort((a,b) => b.week - a.week);
 
-  const scoreCache = {};
-  for (const w of weeks){
-    if (!(w.week in scoreCache)){
-      const s = await db.collection('teamScores').doc(String(w.week)).get();
-      scoreCache[w.week] = s.exists ? (s.data().teams || {}) : {};
-    }
-  }
+  await loadTeamScores();
 
   wrap.innerHTML = weeks.map(w => {
-    const scores = scoreCache[w.week];
+    const scores = teamScoresCache[String(w.week)] || {};
     let total = 0;
     const chips = w.teams.map(t => {
       const pts = scores[t];
@@ -796,19 +894,73 @@ async function renderMyPicks(){
 }
 
 /* =========================================================================
+   8b. TEAM INFO — past results, avg pts/week, and upcoming schedule
+   ========================================================================= */
+function renderTeamInfoList(filter){
+  const wrap = document.getElementById('teamInfoList');
+  wrap.innerHTML = '';
+  const f = (filter || '').toLowerCase();
+  TEAMS.filter(t => t.name.toLowerCase().includes(f)).forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'team-row';
+    row.innerHTML = `
+      <span class="team-rank">#${teamRank(t.name) ?? t.rank}</span>
+      <span class="team-name-col">
+        <span class="team-name-main">${t.name}</span>
+        <span class="team-meta">${teamMetaLine(t.name)}</span>
+      </span>
+    `;
+    row.addEventListener('click', () => showTeamDetail(t.name));
+    wrap.appendChild(row);
+  });
+}
+document.getElementById('teamInfoSearch').addEventListener('input', (e) => renderTeamInfoList(e.target.value));
+
+function showTeamDetail(team){
+  const box = document.getElementById('teamInfoDetail');
+  const rank = teamRank(team);
+  const avg = teamAvgPoints(team);
+  const past = scheduleCache.filter(s => s.team === team && s.completed).sort((a,b) => a.week - b.week);
+  const upcoming = scheduleCache.filter(s => s.team === team && !s.completed).sort((a,b) => a.week - b.week);
+
+  box.style.display = 'block';
+  box.innerHTML = `
+    <h3>${team}${rank ? ' · #' + rank : ''}</h3>
+    <p class="section-sub">${avg != null ? avg.toFixed(2) + ' avg fantasy pts/week across ' + past.length + ' game(s) played' : 'No completed, scored games yet.'}</p>
+    <h4>Past games</h4>
+    ${past.length ? renderScheduleTable(past, true, team) : '<p class="hint">None yet.</p>'}
+    <h4>Upcoming</h4>
+    ${upcoming.length ? renderScheduleTable(upcoming, false, team) : '<p class="hint">Nothing scheduled — check back after the Sheet syncs.</p>'}
+  `;
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function renderScheduleTable(rows, showPoints, team){
+  return `<table class="board"><thead><tr>
+      <th>Wk</th><th>Opponent</th><th>Opp #</th><th>H/A</th>${showPoints ? '<th style="text-align:right;">Pts</th>' : ''}
+    </tr></thead><tbody>${rows.map(r => {
+      const pts = showPoints ? (teamScoresCache[String(r.week)] || {})[team] : null;
+      return `<tr>
+        <td>${r.week}</td>
+        <td>${r.opponent}</td>
+        <td>${typeof r.opponentRank === 'number' ? '#' + r.opponentRank : '—'}</td>
+        <td>${r.home ? 'Home' : 'Away'}</td>
+        ${showPoints ? `<td class="pts-cell">${typeof pts === 'number' ? pts.toFixed(2) : '—'}</td>` : ''}
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+/* =========================================================================
    9. LEADERBOARD
    ========================================================================= */
 async function renderLeaderboard(){
   const body = document.getElementById('leaderboardBody');
   body.innerHTML = '<tr><td colspan="4">Loading…</td></tr>';
 
-  const [picksSnap, scoresSnap] = await Promise.all([
+  const [picksSnap] = await Promise.all([
     db.collection('picks').get(),
-    db.collection('teamScores').get()
+    loadTeamScores()
   ]);
-
-  const scoresByWeek = {};
-  scoresSnap.forEach(d => scoresByWeek[d.id] = d.data().teams || {});
+  const scoresByWeek = teamScoresCache;
 
   const totals = {}; // username -> { displayName, total, weeks: Set }
   picksSnap.forEach(d => {
