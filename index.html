@@ -500,12 +500,12 @@ Miami, 41.05"></textarea>
       Firebase Console → Project settings → Your apps → SDK setup and config.
    ========================================================================= */
 const firebaseConfig = {
-  apiKey: "AIzaSyC51oydwg4JxH51PuI4cgXNzymqliHTq74",
-  authDomain: "fantasy-college-football.firebaseapp.com",
-  projectId: "fantasy-college-football",
-  storageBucket: "fantasy-college-football.firebasestorage.app",
-  messagingSenderId: "1040407917107",
-  appId: "1:1040407917107:web:1b99d649e41a2f8adc2946"
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 
 let db = null;
@@ -635,13 +635,20 @@ async function enterApp(){
   document.getElementById('appHeader').style.display = 'block';
   document.getElementById('appMain').style.display = 'block';
   document.getElementById('whoAmI').textContent = currentUser.displayName;
-  await loadConfig();
-  await Promise.all([loadTeamScores(), loadSchedule(), loadTeamRanks()]);
-  renderTeamList();
-  renderTeamInfoList();
-  await renderLeaderboard();
-  await renderMyPicks();
-  startCountdown();
+  try {
+    await loadConfig();
+    await Promise.all([loadTeamScores(), loadSchedule(), loadTeamRanks()]);
+    renderTeamList();
+    renderTeamInfoList();
+    await renderLeaderboard();
+    await renderMyPicks();
+    startCountdown();
+  } catch (e) {
+    console.error('Failed to load app data:', e);
+    document.getElementById('appMain').innerHTML =
+      '<div class="empty-state">Couldn\'t load data from Firestore. Open the browser console (F12) for the exact error — ' +
+      'common causes are a firebaseConfig typo or a Firestore security rule blocking a read.</div>';
+  }
 }
 
 /* =========================================================================
@@ -697,12 +704,21 @@ function teamMetaLine(team){
 }
 document.getElementById('refreshBtn').addEventListener('click', async () => {
   const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
   btn.textContent = '↻ Refreshing…';
-  await Promise.all([loadTeamScores(true), loadSchedule(true), loadTeamRanks(true)]);
-  renderTeamList(document.getElementById('teamSearch').value);
-  renderTeamInfoList(document.getElementById('teamInfoSearch').value);
-  await renderLeaderboard();
-  btn.textContent = '↻ Refresh data';
+  try {
+    await Promise.all([loadTeamScores(true), loadSchedule(true), loadTeamRanks(true)]);
+    renderTeamList(document.getElementById('teamSearch').value);
+    renderTeamInfoList(document.getElementById('teamInfoSearch').value);
+    await renderLeaderboard();
+    btn.textContent = '↻ Refresh data';
+  } catch (e) {
+    console.error('Refresh failed:', e);
+    btn.textContent = '⚠ Refresh failed — check console';
+    setTimeout(() => { btn.textContent = '↻ Refresh data'; }, 4000);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 /* =========================================================================
